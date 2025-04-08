@@ -5,6 +5,49 @@ from openpyxl.styles import Font, Alignment
 from tqdm import tqdm
 
 
+def get_column_index(df, column_name):
+    """
+    获取指定列名在DataFrame中的索引
+    :param df: DataFrame
+    :param column_name: 列名
+    :return: 列索引，如果未找到则返回 None
+    """
+    col_indices = df.columns[df.iloc[0] == column_name]
+    return col_indices[0] if not col_indices.empty else None
+
+
+def set_cell_style(cell, sample_font, sample_alignment):
+    """
+    设置单元格的字体和对齐方式
+    :param cell: 单元格对象
+    :param sample_font: 示例字体
+    :param sample_alignment: 示例对齐方式
+    :return: 无
+    """
+    cell.font = Font(name=sample_font.name, size=sample_font.size,
+                     bold=sample_font.bold, italic=sample_font.italic,
+                     color=sample_font.color)
+    cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
+                               vertical=sample_alignment.vertical)
+
+
+def update_cell(ws, index, col_index, value, sample_font, sample_alignment):
+    """
+    更新单元格的值，并设置字体和对齐方式
+    :param ws: 工作表对象
+    :param index: 行索引
+    :param col_index: 列索引
+    :param value: 单元格的值
+    :param sample_font: 示例字体
+    :param sample_alignment: 示例对齐方式
+    :return: 无
+    """
+    if col_index is not None:
+        cell = ws.cell(row=index, column=col_index + 1)
+        cell.value = value
+        set_cell_style(cell, sample_font, sample_alignment)
+
+
 def process_csv_files(csv_folder_path, xlsx_file_path):
     """
     该函数用于处理CSV文件和XLSX文件的匹配及数据更新操作。
@@ -33,7 +76,9 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
             # 从CSV文件名中提取数据名称
             data_name = file.split('data_')[-1].replace('.csv', '')
             # 获取Name_in_database列的索引
-            name_in_database_col_index = xlsx_df.columns[xlsx_df.iloc[0] == 'Name_in_database'][0]
+            name_in_database_col_index = get_column_index(xlsx_df, 'Name_in_database')
+            if name_in_database_col_index is None:
+                continue
             # 在XLSX文件中查找匹配的数据行索引
             match_index = xlsx_df[xlsx_df.iloc[:, name_in_database_col_index] == data_name].index
             if not match_index.empty:
@@ -44,35 +89,13 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
                 except FileNotFoundError:
                     continue
 
-                def check_and_update(column_name, alt_columns, func):
-                    """
-                    检查Excel文件中是否存在指定列，并根据传入的函数更新单元格值，同时设置字体和对齐方式。
-                    :param column_name: 要检查的列名
-                    :param alt_columns: 备用列名列表，用于在主列不存在时查找
-                    :param func: 用于计算单元格值的函数
-                    :return: 无
-                    """
-                    col_indices = xlsx_df.columns[xlsx_df.iloc[0] == column_name]
-                    if not col_indices.empty:
-                        col_index = col_indices[0]
-                        value = func(alt_columns)
-                        cell = ws.cell(row=index, column=col_index + 1)
-                        cell.value = value
-                        # 应用第一列第二行单元格的字体格式
-                        cell.font = Font(name=sample_font.name, size=sample_font.size,
-                                         bold=sample_font.bold, italic=sample_font.italic,
-                                         color=sample_font.color)
-                        # 应用垂直居中和水平居中的对齐方式
-                        cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                                   vertical=sample_alignment.vertical)
-
                 def check_accuracy(alt_columns):
                     """
                     检查CSV文件中是否存在Accuracy列，并返回相应的判断结果。
                     :param alt_columns: 备用列名列表（在此处未使用）
                     :return: 'yes' 如果CSV文件存在Accuracy列，否则 'no'
                     """
-                    return 'yes' if 'Accuracy' in csv_df.columns else 'no'
+                    return 'yes' if any(col in csv_df.columns for col in alt_columns) else 'no'
 
                 def check_num_blocks(alt_columns):
                     """
@@ -130,9 +153,7 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
                     :return: 包含最多和最少个数的元组，如果不存在相关列则返回 ('no', 'no')
                     """
                     block_col = next((col for col in alt_columns if col in csv_df.columns), None)
-                    if block_col is None:
-                        return 'no', 'no'
-                    if 'Subj_idx' not in csv_df.columns:
+                    if block_col is None or 'Subj_idx' not in csv_df.columns:
                         return 'no', 'no'
                     unique_counts = csv_df.groupby('Subj_idx')[block_col].nunique()
                     if unique_counts.empty:
@@ -150,56 +171,30 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
                 trial_in_block_columns = ['Trial_in_block', 'trials_per_block', 'NumTrialinBlock', 'Trial_count',
                                           'Trial in Block', 'Trial_number', 'trial_count', 'Trial_Number', 'Trial']
 
-                check_and_update('Accuracy', accuracy_columns, check_accuracy)
-                check_and_update('Num_Blocks', block_columns, check_num_blocks)
-                check_and_update('Num_Trails', trial_columns, check_num_trails)
-                check_and_update('RT_Confidence', confidence_columns, check_rt_confidence)
+                columns_to_check = [
+                    ('Accuracy', accuracy_columns, check_accuracy),
+                    ('Num_Blocks', block_columns, check_num_blocks),
+                    ('Num_Trails', trial_columns, check_num_trails),
+                    ('RT_Confidence', confidence_columns, check_rt_confidence),
+                    ('Blank_Value', [], check_blank_values)
+                ]
+
+                for col_name, alt_columns, func in columns_to_check:
+                    col_index = get_column_index(xlsx_df, col_name)
+                    value = func(alt_columns)
+                    update_cell(ws, index, col_index, value, sample_font, sample_alignment)
 
                 max_trial, min_trial = check_trial_in_block(block_columns)
-                max_trial_col_indices = xlsx_df.columns[xlsx_df.iloc[0] == 'Max_Trial_in_block']
-                if not max_trial_col_indices.empty:
-                    max_trial_col_index = max_trial_col_indices[0]
-                    cell = ws.cell(row=index, column=max_trial_col_index + 1)
-                    cell.value = max_trial
-                    cell.font = Font(name=sample_font.name, size=sample_font.size,
-                                     bold=sample_font.bold, italic=sample_font.italic,
-                                     color=sample_font.color)
-                    cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                               vertical=sample_alignment.vertical)
-                min_trial_col_indices = xlsx_df.columns[xlsx_df.iloc[0] == 'Min_Trial_in_block']
-                if not min_trial_col_indices.empty:
-                    min_trial_col_index = min_trial_col_indices[0]
-                    cell = ws.cell(row=index, column=min_trial_col_index + 1)
-                    cell.value = min_trial
-                    cell.font = Font(name=sample_font.name, size=sample_font.size,
-                                     bold=sample_font.bold, italic=sample_font.italic,
-                                     color=sample_font.color)
-                    cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                               vertical=sample_alignment.vertical)
-
-                check_and_update('Blank_Value', [], check_blank_values)
+                update_cell(ws, index, get_column_index(xlsx_df, 'Max_Trial_in_block'), max_trial, sample_font,
+                            sample_alignment)
+                update_cell(ws, index, get_column_index(xlsx_df, 'Min_Trial_in_block'), min_trial, sample_font,
+                            sample_alignment)
 
                 max_block, min_block = check_block_min_max(block_columns)
-                max_block_col_indices = xlsx_df.columns[xlsx_df.iloc[0] == 'Max_Num_Blocks']
-                if not max_block_col_indices.empty:
-                    max_block_col_index = max_block_col_indices[0]
-                    cell = ws.cell(row=index, column=max_block_col_index + 1)
-                    cell.value = max_block
-                    cell.font = Font(name=sample_font.name, size=sample_font.size,
-                                     bold=sample_font.bold, italic=sample_font.italic,
-                                     color=sample_font.color)
-                    cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                               vertical=sample_alignment.vertical)
-                min_block_col_indices = xlsx_df.columns[xlsx_df.iloc[0] == 'Min_Num_Blocks']
-                if not min_block_col_indices.empty:
-                    min_block_col_index = min_block_col_indices[0]
-                    cell = ws.cell(row=index, column=min_block_col_index + 1)
-                    cell.value = min_block
-                    cell.font = Font(name=sample_font.name, size=sample_font.size,
-                                     bold=sample_font.bold, italic=sample_font.italic,
-                                     color=sample_font.color)
-                    cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                               vertical=sample_alignment.vertical)
+                update_cell(ws, index, get_column_index(xlsx_df, 'Max_Num_Blocks'), max_block, sample_font,
+                            sample_alignment)
+                update_cell(ws, index, get_column_index(xlsx_df, 'Min_Num_Blocks'), min_block, sample_font,
+                            sample_alignment)
 
             pbar.update(1)
 
@@ -207,11 +202,7 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
     ws.append(new_row)
     # 对新增行应用第一列第二行单元格的字体格式和对齐方式
     for cell in ws[ws.max_row]:
-        cell.font = Font(name=sample_font.name, size=sample_font.size,
-                         bold=sample_font.bold, italic=sample_font.italic,
-                         color=sample_font.color)
-        cell.alignment = Alignment(horizontal=sample_alignment.horizontal,
-                                   vertical=sample_alignment.vertical)
+        set_cell_style(cell, sample_font, sample_alignment)
 
     try:
         wb.save(xlsx_file_path)
@@ -221,6 +212,6 @@ def process_csv_files(csv_folder_path, xlsx_file_path):
 
 
 csv_folder_path = 'C:/Users/孔昊男/Desktop/data/database test/csv'
-xlsx_file_path = 'C:/Users/孔昊男/Desktop/data/Database_Information.xlsx'
+xlsx_file_path = 'C:/Users/孔昊男/Desktop/data/Database_Information1.xlsx'
 
 process_csv_files(csv_folder_path, xlsx_file_path)
